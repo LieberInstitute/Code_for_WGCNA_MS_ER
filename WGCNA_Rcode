@@ -1,0 +1,1007 @@
+
+#------------ CODE FOR PAPER "Identification and prioritization of gene sets associated with schizophrenia risk..."------------------------
+
+
+rm(list = ls()) ## Clear workspace
+
+
+#-----------------Load the required packages-------------------
+
+library(WGCNA) 
+
+options(stringsAsFactors=FALSE)
+
+library(SummarizedExperiment)
+library(plyr)
+library(sva)
+library(limma)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(knitr)
+library(biomaRt)
+library(MASS)
+library(ggplot2)
+library(ppcor)
+library(Hmisc)
+library(ggpmisc)
+library(lavaan)
+
+#-------------------- Load the expression data: RNA-Seq, DLPFC-----------------------
+
+load(file="./rse_gene_BrainSeq_Phase1_hg19_TopHat2_EnsemblV75.rda") 
+
+# Same protocol for CMC data
+
+# load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/rse_gene_CMC_hg19_TopHat2_EnsemblV75_N547 (1).rda")
+
+
+## 1) Check the normalized data, metadata, gene model information from rse_gene, and gene lists for enrichment analysis
+
+
+print(dim(assays(rse_gene)$counts)); 
+print(dim(colData(rse_gene)));
+
+##[1] 63677 expression features;  738 samples
+##[1] 738 samples;  56 variables
+
+print(assays(rse_gene)$counts)
+print(colnames(colData(rse_gene)))
+
+
+#------------- Selecting the brain samples for network analysis------------------
+
+## Demographic and RNA quality variables: subsetting by age, race, dx, RIN and for CMC, also by institution :
+## Selecting adult samples, CTRLs and SCZ, CAUC, age<=80 and >=16, RIN>=7
+
+pd = colData(rse_gene)
+
+keepIndex = which(pd$Dx=="Control" | pd$Dx=="Schizo")
+rse_gene = rse_gene[,keepIndex]
+rse_qsvs = rse_qsvs[,keepIndex]
+
+pd=colData(rse_gene)
+
+keepIndex = which(pd$Race=="CAUC")
+rse_gene = rse_gene[,keepIndex]
+rse_qsvs = rse_qsvs[,keepIndex]
+
+pd=colData(rse_gene)
+
+keepIndex = which(pd$Age<=80 & pd$Age>=16)
+rse_gene = rse_gene[,keepIndex]
+rse_qsvs = rse_qsvs[,keepIndex]
+
+pd=colData(rse_gene)
+
+keepIndex = which(pd$RIN>=7)
+rse_gene = rse_gene[,keepIndex]
+rse_qsvs = rse_qsvs[,keepIndex]
+
+
+# Calculating the RPKM with get_RPKM function, creating the files with expression, demographic and clinical traits, and degradation matrix
+
+data_RPKM<-as.data.frame(getRPKM(rse_gene)) 
+datTraits<-as.data.frame(colData(rse_gene)) 
+degradationMatrix<-as.data.frame(assays(rse_qsvs)$counts)
+
+
+#----------- Checking for extreme outliers in covariates used for data cleaning ------------
+
+## Covariates used for removal of unwanted variance: RIN, PMI, mapping rate, total assigned genes, genomic PCs
+## Samples were visually inspected for outliers with respect to variables to be removed
+
+## Examples:
+
+boxplot(datTraits$RIN)
+boxplot(datTraits$PMI)
+boxplot(datTraits$mappingRate)
+boxplot(datTraits$totalAssignedGene)
+
+## The final sample used for data cleaning included N=164 samples, CTRL=90, SCZ=74.
+## Gene expression data quantified in RPKM was saved in .csv format 
+## Load this spreadsheet for filetring genes with abundace RPKM>=0.1
+
+RPKM_63677ENS_164samples <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/RPKM_63677ENS_164samples.csv")
+RPKM=RPKM_63677ENS_164samples
+
+## Transform first column with ENSEMBL identifiers in a row.names column
+
+ENS=RPKM$ENSEMBL
+RPKM=RPKM[,-1]
+row.names(RPKM)<-ENS # The RPKM data in a format necessary to filter genes with RPKM>=0.1
+
+RPKM=as.matrix(RPKM)
+median <- apply(RPKM, 1, median) 
+median=as.data.frame(median)
+median=as.vector(median$median)
+
+RPKM=as.data.frame(RPKM)
+
+RPKM["median"]<-median
+reduced_RPKM<-subset(RPKM,RPKM$median>=0.1) 
+data_RPKM_final=reduced_RPKM[,c(-165)] # Removing the last column representing the median RPKM across samples
+
+## Save data_RPKM_final as .csv ('RPKM_22945ENS_164samples.csv')
+
+data_log2tr_RPKM_final=log2(data_RPKM_final+1)
+
+## Save data_log2tr_RPKM_final as .csv ('RPKM_log2tr_plus1_22945ENS_164samples.csv')
+## Use this data for removing the unwanted variance
+
+
+#------------ Removing unwanted variance----------------------------------
+
+## Expression data files and demographic information associated with these samples were saved in .csv format
+
+rm(list = ls()) ## Clear workspace
+
+## Reload expression data and metadata for the 164 samples to perform data cleaning and removal of unwanted variance
+
+Demogr_genomicPCs_degPCs_PRS_164samples <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/Demogr_genomicPCs_degPCs_PRS_164samples.csv")
+RPKM_log2tr_plus1_22945ENS_164samples <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/RPKM_log2tr_plus1_22945ENS_164samples.csv")
+
+datTraits=Demogr_genomicPCs_degPCs_PRS_164samples
+
+#---------------Check demographics--------------------
+
+Female=length(which(datTraits$Sex==0))
+Male=length(which(datTraits$Sex==1))
+Female_SCZ=length(which(datTraits$Dx==1 & datTraits$Sex==0))
+Male_SCZ=length(which(datTraits$Dx==1 & datTraits$Sex==1))
+
+CTRL=subset(datTraits, datTraits$Dx==0)
+SCZ=subset(datTraits, datTraits$Dx==1)
+
+summary(datTraits$Age)
+
+summary(CTRL$Age)
+SD(CTRL$Age)
+
+summary(SCZ$Age)
+SD(SCZ$Age)
+
+summary(CTRL$RIN)
+SD(CTRL$RIN)
+
+summary(SCZ$RIN)
+SD(SCZ$RIN)
+
+summary(CTRL$PMI)
+SD(CTRL$PMI)
+
+summary(SCZ$PMI)
+SD(SCZ$PMI)
+
+
+tbl=table(datTraits$Sex,datTraits$Dx) # Requires the MASS package.
+tbl
+chisq.test(tbl) # Apply chi-squared test to check if Dx and Sex are independent; p>0.05, therefore they are independent
+
+M1=t.test(datTraits$Age~datTraits$Dx) 
+print(M1)
+M2=t.test(datTraits$RIN~datTraits$Dx)
+print(M2)
+M3=t.test(datTraits$PMI~datTraits$Dx)
+print(M3)
+
+
+#--------------- Defining the variables to be used in RUV correction ---------------- 
+
+RIN=datTraits$RIN
+mappingRate=datTraits$mappingRate
+PMI=datTraits$PMI
+totalAssignedGene=datTraits$totalAssignedGene
+snpPC1=datTraits$snpPC1
+snpPC2=datTraits$snpPC2
+snpPC3=datTraits$snpPC3
+snpPC4=datTraits$snpPC4
+snpPC5=datTraits$snpPC5
+snpPC6=datTraits$snpPC6
+snpPC7=datTraits$snpPC7
+snpPC8=datTraits$snpPC8
+snpPC9=datTraits$snpPC9
+snpPC10=datTraits$snpPC10
+Dx<-datTraits$Dx
+Age<-datTraits$Age
+
+#--------------------- Empirical Bayes RUV----------------------------
+
+## Using the empiricalBayesLM function:
+
+Covs<-cbind(RIN,PMI,mappingRate,totalAssignedGene,snpPC1,snpPC2,snpPC3,snpPC4,snpPC5,snpPC6,snpPC7,snpPC8,snpPC9,snpPC10)
+removedCovariates<-as.data.frame(Covs)
+
+## Transposing the expression data for applying empB
+
+datExpr <- t(RPKM_log2tr_plus1_22945ENS_164samples[,2:ncol(RPKM_log2tr_plus1_22945ENS_164samples)])
+colnames(datExpr)<-RPKM_log2tr_plus1_22945ENS_164samples[,1]
+datExpr<-as.data.frame(datExpr)
+
+## Running empiricalBayesLM function
+
+EmpB = empiricalBayesLM(
+  data=datExpr,
+  removedCovariates,
+  retainedCovariates = NULL,
+  weights = NULL,
+  weightType = "empirical",
+  stopOnSmallWeights = TRUE,
+  tol = 1e-4, maxIterations = 1000,
+  scaleMeanToSamples = NULL,
+  robustPriors = FALSE,
+  automaticWeights ="bicov",
+  aw.maxPOutliers = 0.1)
+
+datExpr_90CTRL_74SCZ<-as.data.frame(EmpB$adjustedData)
+
+save(datExpr_90CTRL_74SCZ,datTraits,EmpB,removedCovariates,file="LIBD_90CTRL_74SCZ_input_06282018.rda")
+
+rm(list = ls()) ## Clear workspace
+
+
+#----------------------Detecting outliers for expression-----------------------------------
+
+## Loading the input data;
+## Checking the cleaned expression data for outliers
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/LIBD_90CTRL_74SCZ_input_06282018.rda")
+
+rm(EmpB,removedCovariates)
+datExpr=datExpr_90CTRL_74SCZ
+rm(datExpr_90CTRL_74SCZ)
+
+sizeGrWindow(12,9)
+sampleTree=hclust(dist(datExpr),method="average")
+
+plot(sampleTree,main="Sample CTRLs SCZ clustering to detect outliers",sub="",xlab="",cex.lab=1.5,cex.axis=1.5,cex.main=2)
+
+abline(h=80,col="red")
+abline(h=70,col="blue")
+
+thresholdZ.k=-5   # Of note, this is a lenient threshold.                  
+dist = dist(datExpr)
+tree = hclust(dist, method = "a")
+Z.k = -scale(colSums(as.matrix(dist)));
+min(Z.k)                            
+
+
+#-------------Running the WGCNA --------------------------------------------------
+
+## This is an essential part of the analysis: creating the network and defining the modules
+
+rm(sampleTree,tree,Z.k,dist,thresholdZ.k)
+
+## Calculating the sft (soft threshold) to chose the power for weighting the correlations
+
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+sft = pickSoftThreshold(datExpr, powerVector = powers, networkType="signed", verbose = 5)
+
+par(mfrow = c(1,2));
+cex1 = 0.9;
+
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"))
+
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+abline(h=0.8,col="red")
+abline(h=0.75,col="red")
+
+## Specifically for empB LIBD N=164, with n=22,945 genes an sft=12 was just a little bit over 0.8;
+## Using the blockwise function for creating the co-expression network:
+
+bwnet =blockwiseModules(datExpr,maxBlockSize=30000,
+                        corType="bicor",
+                        power=12,TOMType = "signed", minModuleSize = 40, # power can vary depending of group; the selection was for an R^2>0.75.
+                        reassignThreshold = 0, mergeCutHeight = 0.25,
+                        numericLabels = TRUE,
+                        saveTOMs = FALSE,
+                        saveTOMFileBase="Network",verbose=3)                         
+
+moduleLabelsAutomatic=bwnet$colors 
+
+# Convert labels to colors for plotting 
+
+moduleColorsAutomatic = labels2colors(moduleLabelsAutomatic) 
+
+sizeGrWindow(6,6);
+
+datColors=data.frame(moduleColorsAutomatic)[bwnet$blockGenes[[1]],] 
+plotDendroAndColors(bwnet$dendrograms[[1]],colors=datColors,
+                    groupLabels=c("Module colors"),dendroLabels=FALSE,
+                    hang=0.03,addGuide=TRUE,guideHang=0.05)
+
+# A data frame with module eigengenes can be obtained as follows: 
+
+MEsAutomatic=bwnet$MEs
+geneTree1=bwnet$dendrograms[[1]]
+
+## Save this intermediate output. Use then for further steps.
+
+## Checking if modules are correlated (meta-modules) and module diagnosis
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/LIBD_90CTRL_74SCZ_02012018.RData")
+
+MEList=moduleEigengenes(datExpr,colors=moduleColorsAutomatic);
+MEs = MEList$eigengenes;
+Dx=datTraits$Dx
+
+MET=orderMEs(cbind(MEs,Dx));
+plotEigengeneNetworks(MET,"",marDendro=c(0,4,1,2),
+                      marHeatmap=c(3,4,1,2),cex.lab=0.8,xLabelsAngle=90)
+
+## The plot shows red-purple-tan, black-midnightblue, turquoise-brown-cyan, green-greenyellow-pink
+## close to one another. Therefore, a higher cutHeight threshold is applied:
+
+mergingThresh=0.30 # A higher cut height threshold compared with the default 0.25
+
+merge = mergeCloseModules(datExpr, moduleColorsAutomatic,
+                          cutHeight=mergingThresh) # Use merge function to cluster modules at a distance <0.30
+
+moduleColorsAutomatic2 = merge$colors; # These are the new module colors after merging modules
+MEs_new = merge$newMEs # These are the new eigengenes after merging
+
+datColors = data.frame(moduleColorsAutomatic2, moduleColorsAutomatic); # This is for plotting initial and merged m,oules together
+plotDendroAndColors(geneTree1, colors = datColors,
+                    groupLabels=c("Module colors merged","Module colors initial"),dendroLabels=FALSE,
+                    hang=0.03,addGuide=TRUE,guideHang=0.05); # plot dendrogram and new modules
+ 
+table(moduleColorsAutomatic2);
+table(moduleColorsAutomatic); # This is to see how the new and old colors are comparing
+geneTree_new=merge$dendro
+
+#------------ Checking the biotype for the genes in the primary CAUC network----------------
+
+
+ensembl = useMart("ENSEMBL_MART_ENSEMBL", # VERSION 75, hg19
+                  dataset="hsapiens_gene_ensembl",
+                  host="feb2014.archive.ensembl.org")
+sym = getBM(attributes = c("ensembl_gene_id","gene_biotype"),
+            values=rownames(t(datExpr)), mart=ensembl)
+
+Gene_biotype=sym$gene_biotype[match(rownames(t(datExpr)), sym$ensembl_gene_id)];
+
+#-------- Calculating the kME for the genes and modules--------------------------------
+
+datKME = signedKME(datExpr, MEs_new) # These are the kme values (correlations between genes and modules' eigengenes)
+
+## Save new module eigengenes, module colors and labels for using in subsequent parts:
+
+# save(MEs_new,moduleColorsAutomatic2,geneTree_new,datKME,file="LIBD_90CTRL_74SCZ_final_output_07022018.RData")
+
+
+#--------------- Additional quality check of the modules---------------
+
+# Diagnosis for first three modules:
+
+sizeGrWindow(8,9)
+par(mfrow=c(3,1), mar=c(1, 2, 4, 1))
+
+which.module="black";
+plotMat(t(scale(datExpr[,moduleColorsAutomatic2==which.module ]) ),nrgcols=30,rlabels=T,
+clabels=T,rcols=which.module,
+title=which.module )
+
+which.module="blue";
+plotMat(t(scale(datExpr[,moduleColorsAutomatic2==which.module ]) ),nrgcols=30,rlabels=T,
+clabels=T,rcols=which.module,
+title=which.module )
+
+which.module="brown";
+plotMat(t(scale(datExpr[,moduleColorsAutomatic2==which.module ]) ),nrgcols=30,rlabels=T,
+clabels=T,rcols=which.module,
+title=which.module )
+
+# Same quality check was applied to all other modules.
+
+
+#---------------------- Internal validation of modules------------------
+
+## Equivalence between empB and degPC networks
+
+rm(list = ls()) ## Clear workspace
+
+## A secondary WGCNA was performed on a subset of 9,239 genes in modules of interest.
+## This was performed on expression data for which removing the unwanted variance was based on quality surrogate variables analysis (qsva).
+## A "degradation matrix" was calculated as described in Jaffe et al 2017.
+
+degradationMatrix_dx_02232018 <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/data_storage/degradationMatrix_dx_02232018.csv")
+
+
+## Calculating the surrogate variables from the degradation matrix:
+
+degradationMatrix=degradationMatrix_dx_02232018[,-1]
+mod = matrix(1,nc=1,nr = ncol(degradationMatrix))
+
+k = num.sv(log2(degradationMatrix+1), mod)
+degPca = prcomp(t(log2(degradationMatrix+1)))
+degPca$x[,1:k]
+
+
+## Load the expression data and metadata (demographics, clinical) that contains also the qSVs calculated above
+
+Demogr_genomicPCs_degPCs_PRS_164samples <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/Demogr_genomicPCs_degPCs_PRS_164samples.csv")
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/Log2tr_datExpr_for_wgcna_on_reduced_genes_to_correct_qsvs.RData")
+
+datTraits=Demogr_genomicPCs_degPCs_PRS_164samples
+
+RIN=datTraits$RIN
+mappingRate=datTraits$mappingRate
+PMI=datTraits$PMI
+totalAssignedGene=datTraits$totalAssignedGene
+snpPC1=datTraits$snpPC1
+snpPC2=datTraits$snpPC2
+snpPC3=datTraits$snpPC3
+snpPC4=datTraits$snpPC4
+snpPC5=datTraits$snpPC5
+snpPC6=datTraits$snpPC6
+snpPC7=datTraits$snpPC7
+snpPC8=datTraits$snpPC8
+snpPC9=datTraits$snpPC9
+snpPC10=datTraits$snpPC10
+qSV1=datTraits$qSV1
+qSV2=datTraits$qSV2
+qSV3=datTraits$qSV3
+qSV4=datTraits$qSV4
+qSV5=datTraits$qSV5
+qSV6=datTraits$qSV6
+qSV7=datTraits$qSV7
+
+Covs<-cbind(RIN,PMI,mappingRate,totalAssignedGene,snpPC1,snpPC2,snpPC3,snpPC4,snpPC5,snpPC6,snpPC7,snpPC8,snpPC9,snpPC10,qSV1,qSV2,qSV3,qSV4,qSV5,qSV6,qSV7)
+removedCovariates<-as.data.frame(Covs)
+
+## Transposing the expression data for applying empB
+
+datExpr_1<-datExpr[,c(-1,-3,-4,-5)]
+datExpr <- t(datExpr_1[,2:ncol(datExpr_1)])
+colnames(datExpr)<-datExpr_1[,1]
+datExpr<-as.data.frame(datExpr)
+
+
+## Running empiricalBayesLM
+
+EmpB = empiricalBayesLM(
+  data=datExpr,
+  removedCovariates,
+  retainedCovariates = NULL,
+  weights = NULL,
+  weightType = "empirical",
+  stopOnSmallWeights = TRUE,
+  tol = 1e-4, maxIterations = 1000,
+  scaleMeanToSamples = NULL,
+  robustPriors = FALSE,
+  automaticWeights ="none",
+  aw.maxPOutliers = 0.1)
+
+datExpr_adjusted=as.data.frame(EmpB$adjustedData)
+
+# save(datExpr_adjusted,file="datExpr_empB_reduced_for_secondaryWGCNA.RData")
+
+## Available at... /For_Mol.../tables/data
+
+#-----------------------Secondary WGCNA with reduced number of genes and corrected for qSVs-----------------
+
+## Same parameters as specified for the primary WGCNA, except for the beta power=5 
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/datExpr_empB_reduced_for_secondaryWGCNA.RData")
+
+bwnet =blockwiseModules(datExpr,maxBlockSize=30000,
+                        corType="bicor",
+                        power=5,TOMType = "signed", minModuleSize = 40, 
+                        reassignThreshold = 0, mergeCutHeight = 0.25,
+                        numericLabels = TRUE,
+                        saveTOMs = FALSE,
+                        saveTOMFileBase="Network",verbose=3) 
+
+## The output of this analysis was saved in a similar manner with primary WGCNA and modules colors were used for 
+## labeling the 9239 genes and checking their distribution the the original modules based on the full set of genes.
+## Hypergeometric test was used to check if these genes significantly overlapped with the original modules.
+
+rm(list = ls()) ## Clear workspace
+
+#------------ Overlapping between empB modules with and without qSVs---------------
+
+## This analysis was performed as an internal validation procedure
+
+Modules_reduced_06292018 <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/Modules_reduced_06292018.csv")
+
+geneR=Modules_reduced_06292018$Gene_Symbol # N=9,239 genes 
+geneR=as.vector(geneR)
+
+labelR=Modules_reduced_06292018$Modules_empB_original
+
+testResults = userListEnrichment(geneR, labelR=labelR,
+                                 fnIn=c("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/Modules_reduced_for_userListEnrichm_06292018.csv"), # Genes with the corresponding degPC modules for the same sample 
+                                 catNmIn=c("degPC"),
+                                 nameOut = "Enrichment_reduced_degPC_in_empB_CAUC_combined_06292018.csv",useBrainLists=FALSE, omitCategories =FALSE)
+
+
+#save(testResults,file="Enrichment_reduced_degPC_in_empB_CAUC_06292018.RData")
+
+kable(testResults$pValues)
+testResults$ovGenes
+
+
+
+#-------- External validation of LIBD modules------------------------------------
+
+## Module Preservation LIBD in CMC
+
+rm(list=ls())
+
+## Load expression data for LIBD and CMC samples
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/CMC_combined_CTRL_SCZ_02022018.rda")
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/LIBD_90CTRL_74SCZ_input_06282018.rda")
+
+## Rename LIBD expression data
+
+datExpr_LIBD=datExpr_90CTRL_74SCZ
+
+setLabels=c("LIBD","CMC");
+multiExpr=list(LIBD=list(data=datExpr_LIBD),CMC=list(data=datExpr_CMC));
+
+## Load the LIBD modules:
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/LIBD_90CTRL_74SCZ_final_output_02022018.RData")
+
+multiColor=list(LIBD=moduleColorsAutomatic2);
+system.time({
+  mp=modulePreservation(multiExpr,multiColor,
+                        referenceNetworks=1,
+                        nPermutations=200,
+                        randomSeed=1,
+                        quickCor=0,
+                        verbose=3)
+});
+
+# save(mp,file="Module_preservation_LIBD_in_CMC_06292018.RData")
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/Module_preservation_LIBD_in_CMC_06292018.RData")
+
+
+# Analyze and plot the preservation results
+
+ref=1;
+test=2;
+
+statsObs = cbind(mp$quality$observed[[ref]][[test]][, -1], mp$preservation$observed[[ref]][[test]][, -1])
+statsZ = cbind(mp$quality$Z[[ref]][[test]][, -1], mp$preservation$Z[[ref]][[test]][, -1]);
+
+## We look at the main output: the preservation medianRank and Zsummary statistics.
+
+## Compare preservation to quality:
+print( cbind(statsObs[, c("medianRank.pres", "medianRank.qual")],
+             signif(statsZ[, c("Zsummary.pres", "Zsummary.qual")], 2)) )
+
+## Module labels and module sizes are also contained in the results
+modColors = rownames(mp$preservation$observed[[ref]][[test]])
+moduleSizes = mp$preservation$Z[[ref]][[test]][, 1];
+
+## leave grey and gold modules out
+plotMods = !(modColors %in% c("grey", "gold"));
+## Text labels for points
+text = modColors[plotMods];
+
+sizeGrWindow(8,7);
+par(mfrow=c(1,2))
+#par(mar=c(5, 7.4, 2.7, 1)+0.3);
+plotData1=mp$preservation$observed[[ref]][[test]][, 2]
+Lim=c(1:25)
+mains1 = "Preservation Median rank"
+min = min(Lim, na.rm = TRUE);
+max = max(Lim, na.rm = TRUE);
+{if (min > -max/10) min = -max/10
+ ylim = c(max + 0.1 * (max-min), min - 0.1 * (max-min))}
+
+par(mar = c(4.5,4.5,2.5,1))
+#par(mar=c(9,9,2.5,1))
+#par(mar=c(5, 7.4, 2.7, 1)+0.3);
+plot(moduleSizes[plotMods], plotData1[plotMods], col = 1, bg = modColors[plotMods], pch = 21,
+     main = mains1,
+     cex = 1.5,
+     ylab = mains1, xlab = "Module size", log = "x",
+     ylim = ylim,
+     xlim = c(10, 2000),cex.lab = 1.2, cex.axis = 1, cex.main =1.2)
+
+
+plotData2=mp$preservation$Z[[ref]][[test]][,2]
+mains2 = "Preservation Zsummary";
+max=max(plotData2)
+min=min(plotData2)
+if (min > -max/10) min = -max/10
+ylim = c(min - 0.1 * (max-min), max + 0.1 * (max-min))
+
+plot(moduleSizes[plotMods], plotData2[plotMods], col = 1, bg = modColors[plotMods], pch = 21,
+     main = mains2,
+     cex = 1.5,
+     ylab = mains2, xlab = "Module size", log = "x",
+     ylim = ylim,
+     xlim = c(10, 2000),cex.lab = 1.2, cex.axis = 1, cex.main =1.2)
+
+labelPoints(moduleSizes[plotMods],plotData2[plotMods],text, cex = 0.7, offs = 0.08);
+abline(h=0)
+abline(h=2, col = "red", lty = 2)
+abline(h=7,col="red",lty=2)
+abline(h=10, col = "blue", lty = 2)
+
+
+#------------ External validation: Gene-ontology analysis---------------------
+ 
+rm(list=ls())
+
+## Creating the universe
+
+Universe_by_ENTREZID_02012018 <- read.table("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/Universe_by_ENTREZID_02012018.csv", header=TRUE, quote="\"")
+
+geneList=as.character(Universe_by_ENTREZID_02012018$ENTREZID) # This will be used for the universe;
+
+## Creating gene lists based on modules.
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/LIBD_90CTRL_74SCZ_final_output_02022018.RData")
+
+table(moduleColorsAutomatic2)
+
+All_GeneID <- read.table("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/All_GeneID.csv", header=TRUE, quote="\"")
+
+All_GeneID["Modules"]<-moduleColorsAutomatic2 
+
+Black=subset(All_GeneID,All_GeneID$Modules=="black")
+Black=bitr(Black$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Black$ENTREZID
+
+Blue=subset(All_GeneID,All_GeneID$Modules=="blue")
+Blue=bitr(Blue$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Blue$ENTREZID
+
+Brown=subset(All_GeneID,All_GeneID$Modules=="brown") # Running only brown for illustration purpose
+Brown=bitr(Brown$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Brown$ENTREZID
+
+Cyan=subset(All_GeneID,All_GeneID$Modules=="cyan")
+Cyan=bitr(Cyan$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Cyan$ENTREZID
+
+Green=subset(All_GeneID,All_GeneID$Modules=="green")
+Green=bitr(Green$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Green$ENTREZID
+
+Greenyellow=subset(All_GeneID,All_GeneID$Modules=="greenyellow")
+Greenyellow=bitr(Greenyellow$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Greenyellow$ENTREZID
+
+Magenta=subset(All_GeneID,All_GeneID$Modules=="magenta")
+Magenta=bitr(Magenta$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Magenta$ENTREZID
+
+Midnightblue=subset(All_GeneID,All_GeneID$Modules=="midnightblue")
+Midnightblue=bitr(Midnightblue$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Midnightblue$ENTREZID
+
+Red=subset(All_GeneID,All_GeneID$Modules=="red")
+Red=bitr(Red$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Red$ENTREZID
+
+Salmon=subset(All_GeneID,All_GeneID$Modules=="salmon")
+Salmon=bitr(Salmon$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Salmon$ENTREZID
+
+Turquoise=subset(All_GeneID,All_GeneID$Modules=="turquoise")
+Turquoise=bitr(Turquoise$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Turquoise$ENTREZID
+
+Yellow=subset(All_GeneID,All_GeneID$Modules=="yellow")
+Yellow=bitr(Yellow$ENSEMBL, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+gene=Yellow$ENTREZID
+
+#----------------------------Running one example for brown module--------------
+
+## Using the p values and the q values from the vignette (section: 5.3) for the clusterProfiler package
+
+Brown<- enrichGO(gene  = gene,
+                  universe  = geneList,
+                  OrgDb     = org.Hs.eg.db,
+                  ont       = "BP",
+                  pAdjustMethod = "BH",
+                  minGSSize=5,
+                  pvalueCutoff  = 0.01,
+                  qvalueCutoff  = 0.05,
+                  readable      =TRUE)
+
+head(Brown@result$Description) 
+
+## The results were saved as supplementary table 3.
+
+rm(list=ls())
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/GO_BP_enrichment_empB_CAUC_02012018.RData") # This was for the the non-merged network
+
+
+#---------------- Enrichment of modules in cellular markers; for comparison with Oldham et al (2008) modules:---------
+
+rm(list=ls())
+
+Modules_CAUC_empB_original_04302018 <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/Modules_CAUC_empB_original_04302018.csv")
+
+geneR=Modules_CAUC_empB_original_04302018$Gene_Symbol
+geneR=as.vector(geneR)
+labelR=Modules_CAUC_empB_original_04302018$Modules_empB
+labelR=as.vector(labelR)
+
+testResults1 = userListEnrichment(geneR, labelR=labelR,
+                                 catNmIn=c(""),
+                                 nameOut = "Enrichment_in_cellular_markers_for_primary_network_07312018.csv",useBrainLists=TRUE, omitCategories ="grey")
+
+testResults1$ovGenes
+
+## Optional: see some brain lists in this function.
+
+data(BrainLists);
+listGenes = as.data.frame(unique(as.character(BrainLists)))
+
+#------------------ Comparisons with other studies-------------------------------
+
+# Checking for the overlap with Gandal and Fromer modules; of note, these are based on the entire gene list (N=22,945)
+
+testResults2 = userListEnrichment(geneR, labelR=labelR,
+                                  fnIn=c("Fromer_modules_cases_07022018.csv"),
+                                  catNmIn=c("SCZ_only"),
+                                  nameOut = "Enrichment_of_Fromer_modules_in_LIBD_network_0702208.csv",useBrainLists=FALSE, omitCategories =TRUE)
+
+kable(testResults2$pValues)
+testResults2$ovGenes
+
+testResults3 = userListEnrichment(geneR, labelR=labelR,
+                                  fnIn=c("Gandal_modules_07022018.csv"),
+                                  catNmIn=c("Gandal"),
+                                  nameOut = "Enrichment_of_Gandal_modules_LIBD_network_07312018.csv",useBrainLists=FALSE, omitCategories =TRUE)
+
+
+kable(testResults3$pValues)
+testResults3$ovGenes
+
+
+#--------------- Identification and prioritization of the PGC2 loci genes-------------------------
+
+rm(list=ls())
+
+# -------------- userListEnrichment to assess if co-expression modules are enriched for PGC2 genes -------------------
+
+
+Protein_coding_module_specific <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/Protein_coding_module_specific.csv")
+
+geneR=Protein_coding_module_specific$Gene_Symbol
+geneR<-as.vector(geneR)
+labelR=Protein_coding_module_specific$Modules_empB
+
+
+testResults4 = userListEnrichment(geneR, labelR=labelR,
+                                  fnIn=c("PGC2_reduced.txt"), 
+                                  catNmIn=c("PGC2"),
+                                  nameOut = "Enrichment_of_PGC2_in_modules_08022018.csv",useBrainLists=FALSE, omitCategories =FALSE)
+
+testResults4$ovGenes
+kable(testResults4$pValues)
+
+
+## Writing the PGC2 overlapping genes
+
+OvGenes=kable(testResults2$ovGenes)
+OvGenes=as.data.frame(unlist(testResults2[[2]]))
+write.csv(OvGenes,file="PGC2_genes_distribution_in_modules.csv")
+
+
+
+#---------------------------- Selecting tier 1, 2, 3 PGC2 genes; intra-modular analysis-----------------
+
+rm(list=ls())
+
+# Creating the input that combines expression and clinical data
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/LIBD_90CTRL_74SCZ_final_output_02022018.RData")
+Demogr_genomicPCs_degPCs_PRS_164samples <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/Demogr_genomicPCs_degPCs_PRS_164samples.csv")
+datTraits=Demogr_genomicPCs_degPCs_PRS_164samples
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/LIBD_combined_90CTRL_74SCZ_01312018.rda")
+
+datExpr=datExpr_90CTRL_74SCZ
+
+names(datTraits)
+
+Covs_of_interest=datTraits[,c(-(1:8),-11,-12,-(14:32),-(43:49))]
+names(Covs_of_interest)
+
+datTraits=Covs_of_interest
+
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+
+dim(datTraits)
+names(datTraits)
+
+
+#-----Finding correlations between modules eigengenes (MEs) and traits of interest (i.e. age, RPS,sex, etc.)
+## Display correlations and their p-values
+
+MEs0 = moduleEigengenes(datExpr, moduleColorsAutomatic2)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+
+sizeGrWindow(10,6)
+
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+                   signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3));
+
+## Display the correlation values within a heatmap plot
+
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(datTraits),
+               xSymbols=names(datTraits),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = greenWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+
+
+# ----------------Define a measure of module significance as the average gene significance of all the genes in the module-----------------
+
+## This approach can link the dx (a binary trait) by the gene significance.
+
+datExpr=as.data.frame(datExpr_90CTRL_74SCZ)
+rm(datExpr_90CTRL_74SCZ)
+
+y=Covs_of_interest$Dx
+GS1=as.numeric(cor(y,datExpr,use="p"))
+
+signif(cor(y,MEs_new,use="p"),2)
+
+GeneSignificance=abs(GS1)
+ModuleSignificance=tapply(GeneSignificance,moduleColorsAutomatic2,mean,na.rm=T)
+
+ModuleSignificance
+
+# Plot the module significance
+
+sizeGrWindow(8,6)
+par(mar = c(6, 4, 3, 3));
+#par(mfrow=c(1,1))
+
+plotModuleSignificance(GeneSignificance,moduleColorsAutomatic2,cex.axis=.9,cex.main=1.5, las=2)
+abline(h=0.15,col="red",lty=2)
+
+
+## The following are the p values for the correlations between modules eigengenes and the diagnosis.
+
+datME=moduleEigengenes(datExpr,moduleColorsAutomatic2)$eigengenes
+signif(cor(y,datME, use="p"),2)
+p.values = corPvalueStudent(cor(y,datME, use="p"), nSamples = length(y))
+View(p.values)
+
+cor.test(y, datME$MEbrown) # Example for the brown module
+
+#--------- Hub genes for the LIBD CAUC network---------------------
+
+
+Modules_CAUC_empB_original_04302018 <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/Modules_CAUC_empB_original_04302018.csv")
+
+Symbol=Modules_CAUC_empB_original_04302018$Gene_Symbol
+colnames(datExpr)<-Symbol                     # This is to replace column names with gene symbol instead of ENSEMBL
+
+hubs=chooseTopHubInEachModule(datExpr, moduleColorsAutomatic2,
+                              omitColors = "grey",
+                              power = 2,
+                              type = "signed")
+hubs
+
+#----------------------Create the input for visAnt------------------------------
+
+## VisAnt was used for visualization of modules of interest
+## Load the TOM for the CAUC network:
+
+load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/TOM_empB_CAUC_02112018.RData")
+
+## Select your module; repeat the code below for all modules of interest:
+
+module="brown";
+probes=names(datExpr)
+inModule=(moduleColorsAutomatic2==module)
+modProbes=probes[inModule];
+modTOM=TOM_empB_CAUC[inModule,inModule];
+dimnames(modTOM)=list(modProbes,modProbes)
+
+## Select only the top20 genes for visualization to avoid cluttered networks
+
+nTop=20;
+IMConn=softConnectivity(datExpr[,modProbes]);
+top=(rank(-IMConn)<=nTop)
+vis=exportNetworkToVisANT(modTOM[top,top],
+                          file=paste("VisANTInput-",module,"-top20_07022018.txt",sep=""),
+                          weighted=TRUE,
+                          threshold=0,
+                          probeToGene=data.frame(Modules_CAUC_empB_original_04302018$Gene_Symbol,Modules_CAUC_empB_original_04302018$Gene_Symbol))
+
+
+#--------------------------Controlling for sex and age ------------------------
+
+rm(list=ls())
+
+LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018 <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018.csv")
+
+## Checking correlations between age, sex and polygenic scores
+
+library(psych)
+
+data=as.data.frame(cbind(LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$Age,LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$MEbrown,
+                         LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$MEblue,
+                         LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$MEcyan,
+                         LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$MEmidnightblue,
+                         LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$MEblack,
+                         LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$PRS3,LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$PRS4,
+                         LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$PRS5,LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$PRS6, LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$Dx,
+                         LIBD_datTraits_90CTRLs_74SCZ_CAUC_02212018$Sex_1))
+
+names(data)<-c("Age","MEbrown","MEblue","MEcyan","MEmidnightblue","MEblack","PRS3","PRS4","PRS5","PRS6","Dx","Sex")
+
+x1=cbind(data$MEbrown,data$PRS3,data$Age,data$Sex)
+x1=as.data.frame(x1)
+names(x1)<-c("MEbrown","PRS3","Age","Sex")
+
+x2=cbind(data$MEbrown,data$PRS4,data$Age,data$Sex)
+x2=as.data.frame(x2)
+names(x2)<-c("MEbrown","PRS4","Age","Sex")
+
+x3=cbind(data$MEbrown,data$PRS5,data$Age,data$Sex)
+x3=as.data.frame(x3)
+names(x3)<-c("MEbrown","PRS5","Age","Sex")
+
+## This analysis shows that age, sex and polygenic scores are independent regressors (i.e., they are not correlated)
+
+corr.test(x1, y = NULL, use = "pairwise",method="pearson",adjust="holm", alpha=.05,ci=TRUE)
+corr.test(x2, y = NULL, use = "pairwise",method="pearson",adjust="holm", alpha=.05,ci=TRUE)
+corr.test(x3, y = NULL, use = "pairwise",method="pearson",adjust="holm", alpha=.05,ci=TRUE)
+
+
+#----------------------Sensitivity analyses: using regression models to adjust for potential age and sex effects------------------
+
+## Create first, for each PRS set, a model without age and sex, then a model with age and sex as covariates. Check coefficients and p values.
+## This is an example for the module of interest, "brown"; also for the diagnosis.
+
+M1<-lm(data$MEbrown~data$PRS3)
+summary(M1)
+
+M2<-lm(data$MEbrown~data$PRS4)
+summary(M2)
+
+M3<-lm(data$MEbrown~data$PRS5)
+summary(M3)
+
+M4<-lm(data$MEbrown~data$Dx)
+summary(M4)
+
+M5<-lm(data$MEbrown~data$PRS3+data$Age+data$Sex)
+summary(M5)
+
+M6<-lm(data$MEbrown~data$PRS4+data$Age+data$Sex)
+summary(M6)
+
+M7<-lm(data$MEbrown~data$PRS5+data$Age+data$Sex)
+summary(M7)
+
+M8<-lm(data$MEbrown~data$Dx+data$Age+data$Sex)
+summary(M8)
+
+M9<-lm(data$MEbrown~data$Dx+data$Age+data$Sex)
+summary(M9)
+
+## Create a supplementary table to show the p values and effect change after adding age and sex as covariates.
+
+#--------------- End of code-------------------
