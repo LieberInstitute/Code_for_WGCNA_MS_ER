@@ -32,7 +32,7 @@ load(file="./rse_gene_BrainSeq_Phase1_hg19_TopHat2_EnsemblV75.rda")
 
 # Same protocol for CMC data
 
-# load("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/rse_gene_CMC_hg19_TopHat2_EnsemblV75_N547 (1).rda")
+# load(file="./rse_gene_CMC_hg19_TopHat2_EnsemblV75_N547 (1).rda")
 
 
 ## 1) Check the normalized data, metadata, gene model information from rse_gene, and gene lists for enrichment analysis
