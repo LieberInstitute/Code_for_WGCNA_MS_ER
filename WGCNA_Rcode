@@ -101,6 +101,8 @@ boxplot(datTraits$totalAssignedGene)
 ## Gene expression data quantified in RPKM was saved in .csv format 
 ## Load this spreadsheet for filetring genes with abundace RPKM>=0.1
 
+## The table below (.csv) and subsequent files are available by request from the authors.
+
 RPKM_63677ENS_164samples <- read.csv("R:/My_RNA_Seq_experiment/WGCNA_training/Files_for_WGCNA_01242017/WGCNA_for_bioRxiv/For_Mol_Psych_03212018/tables/data/RPKM_63677ENS_164samples.csv")
 RPKM=RPKM_63677ENS_164samples
 
@@ -126,6 +128,7 @@ data_RPKM_final=reduced_RPKM[,c(-165)] # Removing the last column representing t
 data_log2tr_RPKM_final=log2(data_RPKM_final+1)
 
 ## Save data_log2tr_RPKM_final as .csv ('RPKM_log2tr_plus1_22945ENS_164samples.csv')
+
 ## Use this data for removing the unwanted variance
 
 
@@ -155,22 +158,22 @@ SCZ=subset(datTraits, datTraits$Dx==1)
 summary(datTraits$Age)
 
 summary(CTRL$Age)
-SD(CTRL$Age)
+sd(CTRL$Age)
 
 summary(SCZ$Age)
-SD(SCZ$Age)
+sd(SCZ$Age)
 
 summary(CTRL$RIN)
-SD(CTRL$RIN)
+sd(CTRL$RIN)
 
 summary(SCZ$RIN)
-SD(SCZ$RIN)
+sd(SCZ$RIN)
 
 summary(CTRL$PMI)
-SD(CTRL$PMI)
+sd(CTRL$PMI)
 
 summary(SCZ$PMI)
-SD(SCZ$PMI)
+sd(SCZ$PMI)
 
 
 tbl=table(datTraits$Sex,datTraits$Dx) # Requires the MASS package.
