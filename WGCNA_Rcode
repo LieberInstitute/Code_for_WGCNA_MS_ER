@@ -298,6 +298,7 @@ bwnet =blockwiseModules(datExpr,maxBlockSize=30000,
                         corType="bicor",
                         power=12,TOMType = "signed", minModuleSize = 40, # power can vary depending of group; the selection was for an R^2>0.75.
                         reassignThreshold = 0, mergeCutHeight = 0.25,
+                        deepSplit=3,
                         numericLabels = TRUE,
                         saveTOMs = FALSE,
                         saveTOMFileBase="Network",verbose=3)                         
@@ -334,10 +335,10 @@ MET=orderMEs(cbind(MEs,Dx));
 plotEigengeneNetworks(MET,"",marDendro=c(0,4,1,2),
                       marHeatmap=c(3,4,1,2),cex.lab=0.8,xLabelsAngle=90)
 
-## The plot shows red-purple-tan, black-midnightblue, turquoise-brown-cyan, green-greenyellow-pink
-## close to one another. Therefore, a higher cutHeight threshold is applied:
+## The plot shows correlated modules.
+## Therefore, a merging function was applied, with a higher cutHeight threshold:
 
-mergingThresh=0.30 # A higher cut height threshold compared with the default 0.25
+mergingThresh=0.30;
 
 merge = mergeCloseModules(datExpr, moduleColorsAutomatic,
                           cutHeight=mergingThresh) # Use merge function to cluster modules at a distance <0.30
@@ -345,14 +346,14 @@ merge = mergeCloseModules(datExpr, moduleColorsAutomatic,
 moduleColorsAutomatic2 = merge$colors; # These are the new module colors after merging modules
 MEs_new = merge$newMEs # These are the new eigengenes after merging
 
-datColors = data.frame(moduleColorsAutomatic2, moduleColorsAutomatic); # This is for plotting initial and merged m,oules together
+datColors = data.frame(moduleColorsAutomatic2, moduleColorsAutomatic); # This is for plotting initial and merged modules together
 plotDendroAndColors(geneTree1, colors = datColors,
                     groupLabels=c("Module colors merged","Module colors initial"),dendroLabels=FALSE,
                     hang=0.03,addGuide=TRUE,guideHang=0.05); # plot dendrogram and new modules
  
 table(moduleColorsAutomatic2);
 table(moduleColorsAutomatic); # This is to see how the new and old colors are comparing
-geneTree_new=merge$dendro
+
 
 #------------ Checking the biotype for the genes in the primary CAUC network----------------
 
